@@ -1,0 +1,61 @@
+import pandas as pd
+import torch
+from sentence_transformers import SentenceTransformer, util
+import google.generativeai as genai
+import os
+
+
+CSV_PATH = "Downloads/medquad.csv"  
+TOP_K = 3
+SBERT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+GEMINI_MODEL = "gemini-2.0-flash"
+
+
+os.environ["GEMINI_API_KEY"] = "API KEY"  
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+
+df = pd.read_csv(CSV_PATH)
+df.columns = [c.strip().lower() for c in df.columns]
+df = df.rename(columns={"question": "question", "answer": "answer"})
+df = df[["question", "answer"]].fillna("")
+df=df.head(200)
+
+
+model = SentenceTransformer(SBERT_MODEL)
+corpus_embeddings = model.encode(df["answer"].tolist(), convert_to_tensor=True, show_progress_bar=True)
+
+
+def retrieve(query, k=TOP_K):
+    query_embedding = model.encode(query, convert_to_tensor=True)
+    scores = util.pytorch_cos_sim(query_embedding, corpus_embeddings)[0]
+    k = min(k, scores.shape[0])
+    vals, idxs = torch.topk(scores, k)
+    return [(df.iloc[i]["question"], df.iloc[i]["answer"], float(v)) for v, i in zip(vals.tolist(), idxs.tolist())]
+
+def summarize(resources):
+    if not resources:
+        return "🤔 I couldn't find anything relevant."
+
+    prompt = [
+        "You are a friendly healthcare assistant.",
+        "Summarize the following Q&A pairs in 4–6 bullet points, plain language, with relevant emojis.",
+        ""
+    ]
+    for i, (q, a, _) in enumerate(resources, 1):
+        prompt.append(f"{i}. Q: {q}\nA: {a}")
+    prompt.append("\nOnly output the bullets, then remind the user to consult a medical professional.")
+
+    response = genai.GenerativeModel(GEMINI_MODEL).generate_content("\n".join(prompt))
+    return (response.text or "").strip()
+
+
+print("💬 MedQuAD Chatbot ready! Type your question or 'exit' to quit.")
+while True:
+    q = input("\nYour question: ").strip()
+    if q.lower() in {"exit", "quit"}:
+        print("Goodbye! 👋")
+        break
+    results = retrieve(q)
+    print("\nBot:\n" + summarize(results))
+    print("\n(Educational use only. Not medical advice.)")
